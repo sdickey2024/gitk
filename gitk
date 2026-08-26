@@ -2372,7 +2372,7 @@ proc bind_mousewheel_buttons {} {
 }
 
 proc makewindow {} {
-    global canv canv2 canv3 linespc charspc ctext cflist cscroll
+    global canv canv2 canv3 linespc charspc ctext linenums cflist cscroll
     global tabstop
     global findtype findtypemenu findloc findstring fstring geometry
     global entries sha1entry sha1string sha1but
@@ -2388,7 +2388,7 @@ proc makewindow {} {
     global headctxmenu progresscanv progressitem progresscoords statusw
     global fprogitem fprogcoord lastprogupdate progupdatepending
     global rprogitem rprogcoord rownumsel numcommits
-    global worddiff
+    global worddiff showdifflinenumbers
     global hashlength scroll_D0
 
     # The "mc" arguments here are purely so that xgettext
@@ -2638,7 +2638,26 @@ proc makewindow {} {
     trace add variable worddiff write changeworddiff
     pack .bleft.mid.worddiff -side left -padx 5
 
+    ttk::checkbutton .bleft.mid.linenumbers -text [mc "Line numbers"] \
+        -command changedifflinenumbers -variable showdifflinenumbers
+    pack .bleft.mid.linenumbers -side left -padx 5
+
+    ttk::button .bleft.mid.difftop -text "<<" -width 2 \
+        -command {diffnav top}
+    ttk::button .bleft.mid.diffprev -text "<" -width 2 \
+        -command {diffnav prev}
+    ttk::button .bleft.mid.diffnext -text ">" -width 2 \
+        -command {diffnav next}
+    ttk::button .bleft.mid.diffbottom -text ">>" -width 2 \
+        -command {diffnav bottom}
+    pack .bleft.mid.difftop .bleft.mid.diffprev .bleft.mid.diffnext \
+        .bleft.mid.diffbottom -side left -padx 1
+
     set ctext .bleft.bottom.ctext
+    set linenums .bleft.bottom.linenums
+    text $linenums -background $bgcolor -foreground $fgcolor \
+        -state disabled -undo 0 -font textfont -takefocus 0 \
+        -width 13 -wrap none
     text $ctext -background $bgcolor -foreground $fgcolor \
         -state disabled -undo 0 -font textfont \
         -yscrollcommand scrolltext -wrap $wrapdefault \
@@ -2648,14 +2667,20 @@ proc makewindow {} {
     ttk::scrollbar .bleft.bottom.sbhorizontal -command "$ctext xview" -orient h
     pack .bleft.top -side top -fill x
     pack .bleft.mid -side top -fill x
-    grid $ctext .bleft.bottom.sb -sticky nsew
-    grid .bleft.bottom.sbhorizontal -sticky ew
-    grid columnconfigure .bleft.bottom 0 -weight 1
+    grid $linenums $ctext .bleft.bottom.sb -sticky nsew
+    grid .bleft.bottom.sbhorizontal -column 1 -sticky ew
+    grid columnconfigure .bleft.bottom 0 -weight 0
+    grid columnconfigure .bleft.bottom 1 -weight 1
     grid rowconfigure .bleft.bottom 0 -weight 1
     grid rowconfigure .bleft.bottom 1 -weight 0
+    if {!$showdifflinenumbers} {
+        grid remove $linenums
+    }
     pack .bleft.bottom -side top -fill both -expand 1
     lappend bglist $ctext
+    lappend bglist $linenums
     lappend fglist $ctext
+    lappend fglist $linenums
 
     $ctext tag conf comment -wrap $wrapcomment
     $ctext tag conf filesep -font textfontbold -fore $filesepfgcolor -back $filesepbgcolor
@@ -2664,6 +2689,8 @@ proc makewindow {} {
     $ctext tag conf d0 -back [lindex $diffbgcolors 0]
     $ctext tag conf dresult -fore [lindex $diffcolors 1]
     $ctext tag conf dresult -back [lindex $diffbgcolors 1]
+    $linenums tag conf d0 -fore [lindex $diffcolors 0]
+    $linenums tag conf dresult -fore [lindex $diffcolors 1]
     $ctext tag conf m0 -fore [lindex $mergecolors 0]
     $ctext tag conf m1 -fore [lindex $mergecolors 1]
     $ctext tag conf m2 -fore [lindex $mergecolors 2]
@@ -8031,6 +8058,8 @@ proc showinlinediff {ids} {
     foreach line $difflines {
         parseblobdiffline $ids $line
     }
+    update_diff_linenumber_gutter
+    apply_pending_diff_navigation
     maybe_scroll_ctext 1
     $ctext conf -state disabled
 }
@@ -8192,12 +8221,40 @@ proc changeworddiff {name ix op} {
 proc initblobdiffvars {} {
     global diffencoding targetline diffnparents
     global diffinhdr currdiffsubmod diffseehere
+    global diffoldline diffnewline diff_linenumber
     set targetline {}
     set diffnparents 0
     set diffinhdr 0
     set diffencoding [get_path_encoding {}]
     set currdiffsubmod ""
     set diffseehere -1
+    set diffoldline 0
+    set diffnewline 0
+    unset -nocomplain diff_linenumber
+}
+
+proc update_diff_linenumber_gutter {} {
+    global ctext linenums diff_linenumber showdifflinenumbers
+
+    if {!$showdifflinenumbers} {
+        grid remove $linenums
+        return
+    }
+    grid $linenums
+    $linenums conf -state normal
+    set lastline [lindex [split [$ctext index "end - 1c"] "."] 0]
+    set firstline [lindex [split [$linenums index "end - 1c"] "."] 0]
+    for {set line $firstline} {$line < $lastline} {incr line} {
+        if {$showdifflinenumbers && [info exists diff_linenumber($line)]} {
+            lassign $diff_linenumber($line) oldnum newnum
+            $linenums insert end [format "%6s " $oldnum] d0
+            $linenums insert end [format "%6s\n" $newnum] dresult
+        } else {
+            $linenums insert end "\n"
+        }
+    }
+    $linenums yview moveto [lindex [$ctext yview] 0]
+    $linenums conf -state disabled
 }
 
 proc getblobdiffs {ids} {
@@ -8315,11 +8372,13 @@ proc getblobdiffline {bdf ids} {
         }
         parseblobdiffline $ids $line
     }
+    update_diff_linenumber_gutter
     $ctext conf -state disabled
     blobdiffmaybeseehere [eof $bdf]
     if {[eof $bdf]} {
         catch {close $bdf}
         array unset blobdifffd $ids
+        apply_pending_diff_navigation
         return 0
     }
     return [expr {$nr >= 1000? 2: 1}]
@@ -8332,6 +8391,7 @@ proc parseblobdiffline {ids line} {
     global diffinhdr treediffs mergemax diffnparents
     global diffencoding jump_to_here targetline diffline currdiffsubmod
     global worddiff diffseehere
+    global diffoldline diffnewline diff_linenumber
 
     if {![string compare -length 5 "diff " $line]} {
         if {![regexp {^diff (--cc|--git) } $line m type]} {
@@ -8399,6 +8459,11 @@ proc parseblobdiffline {ids line} {
         regexp {^@@+} $line ats
         set line [convertfrom $diffencoding $line]
         $ctext insert end "$line\n" hunksep
+        if {[regexp {^@@ -([0-9]+)(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@} \
+                 $line m old new]} {
+            set diffoldline $old
+            set diffnewline $new
+        }
         if {[regexp { \+(\d+),\d+ @@} $line m nl]} {
             set diffline $nl
         }
@@ -8479,6 +8544,26 @@ proc parseblobdiffline {ids line} {
         if {[string trim $prefix " -+"] eq {}} {
             # prefix only has " ", "-" and "+" in it: normal diff line
             set num [string first "-" $prefix]
+            if {$diffnparents == 1} {
+                set lineno [lindex [split [$ctext index "end - 1c"] "."] 0]
+                set oldnum {}
+                set newnum {}
+                if {$prefix eq "-"} {
+                    set oldnum $diffoldline
+                    incr diffoldline
+                } elseif {$prefix eq "+"} {
+                    set newnum $diffnewline
+                    incr diffnewline
+                } elseif {$prefix eq " "} {
+                    set oldnum $diffoldline
+                    set newnum $diffnewline
+                    incr diffoldline
+                    incr diffnewline
+                }
+                if {$oldnum ne {} || $newnum ne {}} {
+                    set diff_linenumber($lineno) [list $oldnum $newnum]
+                }
+            }
             if {$dowords} {
                 set line [string range $line 1 end]
             }
@@ -8540,10 +8625,103 @@ proc parseblobdiffline {ids line} {
 }
 
 proc changediffdisp {} {
-    global ctext diffelide
+    global ctext linenums diffelide
 
     $ctext tag conf d0 -elide [lindex $diffelide 0]
     $ctext tag conf dresult -elide [lindex $diffelide 1]
+    $linenums tag conf d0 -elide [lindex $diffelide 0]
+    $linenums tag conf dresult -elide [lindex $diffelide 1]
+}
+
+proc changedifflinenumbers {} {
+    update_diff_linenumber_gutter
+}
+
+proc diff_hunk_locations {} {
+    global ctext
+
+    set locations {}
+    foreach {start end} [$ctext tag ranges hunksep] {
+        if {[string match {@@*} [$ctext get $start "$start lineend"]]} {
+            lappend locations $start
+        }
+    }
+    return $locations
+}
+
+proc diffnav_commit {dir target} {
+    global selectedline numcommits diffnavpending
+
+    if {$selectedline eq {}} return
+    set line [expr {$selectedline + $dir}]
+    if {$line < 0 || $line >= $numcommits} return
+    set diffnavpending $target
+    selnextline $dir
+}
+
+proc diffnav {where} {
+    global ctext
+
+    set locations [diff_hunk_locations]
+    if {$locations eq {}} {
+        if {$where eq "top"} {
+            $ctext yview 1.0
+        } elseif {$where eq "bottom"} {
+            $ctext yview end
+        }
+        return
+    }
+
+    set here [$ctext index @0,0]
+    set first [lindex $locations 0]
+    set last [lindex $locations end]
+    switch -- $where {
+        top {
+            if {[$ctext compare $here == $first]} {
+                diffnav_commit -1 bottom
+            } else {
+                $ctext yview $first
+            }
+        }
+        bottom {
+            if {[$ctext compare $here == $last]} {
+                diffnav_commit 1 top
+            } else {
+                $ctext yview $last
+            }
+        }
+        prev {
+            set previous {}
+            foreach location $locations {
+                if {[$ctext compare $location >= $here]} break
+                set previous $location
+            }
+            if {$previous ne {}} {
+                $ctext yview $previous
+            } else {
+                diffnav_commit -1 bottom
+            }
+        }
+        next {
+            foreach location $locations {
+                if {[$ctext compare $location > $here]} {
+                    $ctext yview $location
+                    return
+                }
+            }
+            diffnav_commit 1 top
+        }
+    }
+}
+
+proc apply_pending_diff_navigation {} {
+    global diffnavpending
+
+    if {[info exists diffnavpending]} {
+        set target $diffnavpending
+        unset diffnavpending
+        diffnav $target
+    }
 }
 
 proc highlightfile {cline} {
@@ -8604,6 +8782,7 @@ proc clear_ctext {{first 1.0}} {
     global ctext smarktop smarkbot
     global ctext_file_names ctext_file_lines
     global pendinglinks
+    global linenums diff_linenumber
 
     set l [lindex [split $first .] 0]
     if {![info exists smarktop] || [$ctext compare $first < $smarktop.0]} {
@@ -8613,6 +8792,12 @@ proc clear_ctext {{first 1.0}} {
         set smarkbot $l
     }
     $ctext delete $first end
+    if {$first eq "1.0"} {
+        $linenums conf -state normal
+        $linenums delete 1.0 end
+        $linenums conf -state disabled
+        unset -nocomplain diff_linenumber
+    }
     if {$first eq "1.0"} {
         unset -nocomplain pendinglinks
     }
@@ -8779,7 +8964,7 @@ proc suppress_highlighting_file_for_current_scrollpos {} {
 }
 
 proc scrolltext {f0 f1} {
-    global searchstring cmitmode ctext
+    global searchstring cmitmode ctext linenums
     global suppress_highlighting_file_for_this_scrollpos
 
     set topidx [$ctext index @0,0]
@@ -8791,6 +8976,9 @@ proc scrolltext {f0 f1} {
     unset -nocomplain suppress_highlighting_file_for_this_scrollpos
 
     .bleft.bottom.sb set $f0 $f1
+    if {[winfo exists $linenums]} {
+        $linenums yview moveto $f0
+    }
     if {$searchstring ne {}} {
         searchmarkvisible 0
     }
@@ -11777,6 +11965,10 @@ proc prefspage_general {notebook} {
         -variable limitdiffs
     grid x $page.ldiff -sticky w
 
+    ttk::checkbutton $page.linenumbers -text [mc "Show diff line numbers"] \
+        -variable showdifflinenumbers
+    grid x $page.linenumbers -sticky w
+
     ttk::checkbutton $page.lattr -text [mc "Support per-file encodings"] \
         -variable perfile_attrs
     grid x $page.lattr -sticky w
@@ -12151,6 +12343,9 @@ proc prefsok {} {
     }
     if {$wrapdefault != $oldprefs(wrapdefault)} {
         $ctext configure -wrap $wrapdefault
+    }
+    if {$showdifflinenumbers != $oldprefs(showdifflinenumbers)} {
+        reselectline
     }
 }
 
@@ -12685,6 +12880,7 @@ if {[tk windowingsystem] eq "win32"} {
 set diffcolors {"#c30000" "#009800" blue}
 set diffbgcolors {"#fff3f3" "#f0fff0"}
 set diffcontext 3
+set showdifflinenumbers 0
 set mergecolors {red blue "#00ff00" purple brown "#009090" magenta "#808000" "#009000" "#ff0080" cyan "#b07070" "#70b0f0" "#70f0b0" "#f0b070" "#ff70b0"}
 set ignorespace 0
 set worddiff ""
@@ -12794,6 +12990,7 @@ set config_variables {
     remotebgcolor
     selectbgcolor
     showlocalchanges
+    showdifflinenumbers
     showneartags
     sortrefsbytype
     tabstop

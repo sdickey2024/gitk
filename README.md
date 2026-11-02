@@ -50,10 +50,10 @@ Installation
 To install system-wide, you can use either `make` or `meson`:
 
 ```bash
-# Install to default location ($HOME/bin)
-make install
+# Install to /usr/bin/gitk (replaces the existing file; requires root)
+sudo make install
 
-# Install to system-wide location
+# Install to /usr/local/bin/gitk
 sudo make install prefix=/usr/local
 
 # Install to custom location

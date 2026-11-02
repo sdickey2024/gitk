@@ -1,7 +1,7 @@
 # The default target of this Makefile is...
 all::
 
-prefix ?= $(HOME)
+prefix ?= /usr
 bindir ?= $(prefix)/bin
 sharedir ?= $(prefix)/share
 gitk_libdir   ?= $(sharedir)/gitk/lib
